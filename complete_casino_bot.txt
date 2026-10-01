@@ -1,0 +1,884 @@
+================================================================================
+COMPLETE TELEGRAM CASINO BOT - GAMES API, AIRDROPS, ADMIN PANEL
+Dice 🎲 | Predict 🎯 | Crash | Plinko | Rain | Airdrop | Real Balances
+================================================================================
+
+SETUP:
+1. pip install pyTelegramBotAPI
+2. Get token from @BotFather
+3. Replace YOUR_BOT_TOKEN_HERE
+4. Add your ADMIN_ID
+5. python casino_bot.py
+
+================================================================================
+IMPORTS & CONFIGURATION
+================================================================================
+
+import telebot
+import random
+import json
+import os
+import time
+from datetime import datetime, timedelta
+from telebot import types
+from decimal import Decimal
+
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+ADMIN_IDS = [YOUR_ADMIN_ID_HERE]  # e.g., [123456789, 987654321]
+
+bot = telebot.TeleBot(BOT_TOKEN)
+
+# Data files
+USERS_FILE = "casino_users.json"
+GAMES_FILE = "games_history.json"
+TRANSACTIONS_FILE = "transactions.json"
+ADMIN_LOG_FILE = "admin_log.json"
+AIRDROP_LOG_FILE = "airdrop_log.json"
+
+def load_data(filename):
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_data(data, filename):
+    with open(filename, "w") as f:
+        json.dump(data, f, indent=2)
+
+users = load_data(USERS_FILE)
+games = load_data(GAMES_FILE)
+transactions = load_data(TRANSACTIONS_FILE)
+admin_log = load_data(ADMIN_LOG_FILE)
+airdrop_log = load_data(AIRDROP_LOG_FILE)
+
+================================================================================
+USER MANAGEMENT SYSTEM
+================================================================================
+
+def get_user(user_id):
+    user_id = str(user_id)
+    if user_id not in users:
+        users[user_id] = {
+            "balance": Decimal("1000"),
+            "total_deposited": Decimal("0"),
+            "total_withdrawn": Decimal("0"),
+            "total_wagered": Decimal("0"),
+            "total_won": Decimal("0"),
+            "total_lost": Decimal("0"),
+            "games_played": 0,
+            "wallet": None,
+            "vip": False,
+            "banned": False,
+            "created_at": datetime.now().isoformat(),
+            "referrer": None,
+            "referrals": 0,
+            "last_rain": None,
+            "last_airdrop": None
+        }
+    return users[user_id]
+
+def update_user(user_id, **kwargs):
+    user_id = str(user_id)
+    for key, value in kwargs.items():
+        users[user_id][key] = value
+    save_data(users, USERS_FILE)
+
+def log_game(user_id, game_type, bet, result, payout, multiplier=1):
+    game_id = str(int(time.time() * 1000))
+    games[game_id] = {
+        "user": str(user_id),
+        "game": game_type,
+        "bet": str(bet),
+        "result": result,
+        "payout": str(payout),
+        "multiplier": multiplier,
+        "net": str(Decimal(payout) - Decimal(bet)),
+        "time": datetime.now().isoformat()
+    }
+    save_data(games, GAMES_FILE)
+
+def log_transaction(user_id, txn_type, amount, status, details=""):
+    txn_id = str(int(time.time() * 1000))
+    transactions[txn_id] = {
+        "user": str(user_id),
+        "type": txn_type,
+        "amount": str(amount),
+        "status": status,
+        "details": details,
+        "time": datetime.now().isoformat()
+    }
+    save_data(transactions, TRANSACTIONS_FILE)
+
+def is_admin(user_id):
+    return user_id in ADMIN_IDS
+
+def log_admin_action(admin_id, action, details):
+    log_id = str(int(time.time() * 1000))
+    admin_log[log_id] = {
+        "admin": admin_id,
+        "action": action,
+        "details": details,
+        "time": datetime.now().isoformat()
+    }
+    save_data(admin_log, ADMIN_LOG_FILE)
+
+================================================================================
+DICE GAME 🎲
+================================================================================
+
+def play_dice(user_id, bet):
+    user = get_user(user_id)
+    bet = Decimal(str(bet))
+    
+    if user["banned"]:
+        return "❌ Account banned", None
+    
+    if bet > Decimal(user["balance"]):
+        return "❌ Low balance", None
+    
+    player_roll = random.randint(1, 100)
+    dealer_roll = random.randint(1, 100)
+    
+    if player_roll > dealer_roll:
+        result = "WIN"
+        multiplier = 1.98
+        payout = bet * Decimal("1.98")
+    elif player_roll == dealer_roll:
+        result = "PUSH"
+        payout = bet
+    else:
+        result = "LOSE"
+        payout = Decimal("0")
+    
+    new_balance = Decimal(user["balance"]) - bet + payout
+    update_user(user_id,
+        balance=new_balance,
+        total_wagered=Decimal(user["total_wagered"]) + bet,
+        total_won=Decimal(user["total_won"]) + payout if result == "WIN" else Decimal(user["total_won"]),
+        total_lost=Decimal(user["total_lost"]) + bet if result == "LOSE" else Decimal(user["total_lost"]),
+        games_played=user["games_played"] + 1
+    )
+    
+    log_game(user_id, "dice", bet, f"You:{player_roll} vs Dealer:{dealer_roll}", payout, multiplier if result == "WIN" else 1)
+    
+    if result == "WIN":
+        msg = f"""🎲 **DICE - WIN!**
+
+You: {player_roll}
+Dealer: {dealer_roll}
+Multiplier: 1.98x
+Win: ${payout}
+
+Balance: ${new_balance}
+"""
+    elif result == "PUSH":
+        msg = f"""🎲 **DICE - PUSH**
+
+You: {player_roll}
+Dealer: {dealer_roll}
+Push: ${bet}
+
+Balance: ${new_balance}
+"""
+    else:
+        msg = f"""🎲 **DICE - LOSE**
+
+You: {player_roll}
+Dealer: {dealer_roll}
+Lost: ${bet}
+
+Balance: ${new_balance}
+"""
+    
+    return msg, result
+
+================================================================================
+PREDICT GAME 🎯
+================================================================================
+
+def play_predict(user_id, bet):
+    user = get_user(user_id)
+    bet = Decimal(str(bet))
+    
+    if user["banned"]:
+        return "❌ Account banned", None
+    
+    if bet > Decimal(user["balance"]):
+        return "❌ Low balance", None
+    
+    prediction = random.choice(["📈 UP", "📉 DOWN"])
+    outcome = random.choice(["📈 UP", "📉 DOWN"])
+    
+    result = "WIN" if prediction == outcome else "LOSE"
+    payout = bet * Decimal("1.98") if result == "WIN" else Decimal("0")
+    
+    new_balance = Decimal(user["balance"]) - bet + payout
+    update_user(user_id,
+        balance=new_balance,
+        total_wagered=Decimal(user["total_wagered"]) + bet,
+        total_won=Decimal(user["total_won"]) + payout if result == "WIN" else Decimal(user["total_won"]),
+        total_lost=Decimal(user["total_lost"]) + bet if result == "LOSE" else Decimal(user["total_lost"]),
+        games_played=user["games_played"] + 1
+    )
+    
+    log_game(user_id, "predict", bet, f"Predicted:{prediction} vs Actual:{outcome}", payout, 1.98 if result == "WIN" else 0)
+    
+    if result == "WIN":
+        msg = f"""🎯 **PREDICT - WIN!**
+
+You predicted: {prediction}
+Actual: {outcome}
+Multiplier: 1.98x
+Win: ${payout}
+
+Balance: ${new_balance}
+"""
+    else:
+        msg = f"""🎯 **PREDICT - LOSE**
+
+You predicted: {prediction}
+Actual: {outcome}
+Lost: ${bet}
+
+Balance: ${new_balance}
+"""
+    
+    return msg, result
+
+================================================================================
+CRASH GAME 🚀
+================================================================================
+
+def play_crash(user_id, bet):
+    user = get_user(user_id)
+    bet = Decimal(str(bet))
+    
+    if user["banned"]:
+        return "❌ Account banned", None
+    
+    if bet > Decimal(user["balance"]):
+        return "❌ Low balance", None
+    
+    crash_at = round(random.uniform(1.05, 100), 2)
+    cashout_at = round(random.uniform(1.05, crash_at - 0.1), 2) if random.random() > 0.3 else None
+    
+    if cashout_at and cashout_at < crash_at:
+        result = "WIN"
+        multiplier = cashout_at
+        payout = bet * Decimal(str(cashout_at))
+    else:
+        result = "LOSE"
+        multiplier = 0
+        payout = Decimal("0")
+    
+    new_balance = Decimal(user["balance"]) - bet + payout
+    update_user(user_id,
+        balance=new_balance,
+        total_wagered=Decimal(user["total_wagered"]) + bet,
+        total_won=Decimal(user["total_won"]) + payout if result == "WIN" else Decimal(user["total_won"]),
+        total_lost=Decimal(user["total_lost"]) + bet if result == "LOSE" else Decimal(user["total_lost"]),
+        games_played=user["games_played"] + 1
+    )
+    
+    log_game(user_id, "crash", bet, f"Crash:{crash_at} Cashout:{cashout_at}", payout, cashout_at or 0)
+    
+    if result == "WIN":
+        msg = f"""🚀 **CRASH - WIN!**
+
+Crash at: {crash_at}x
+You cashed at: {cashout_at}x
+Win: ${payout}
+
+Balance: ${new_balance}
+"""
+    else:
+        msg = f"""💥 **CRASH - BUST!**
+
+Crash at: {crash_at}x
+Lost: ${bet}
+
+Balance: ${new_balance}
+"""
+    
+    return msg, result
+
+================================================================================
+PLINKO GAME 🎯
+================================================================================
+
+def play_plinko(user_id, bet):
+    user = get_user(user_id)
+    bet = Decimal(str(bet))
+    
+    if user["banned"]:
+        return "❌ Account banned", None
+    
+    if bet > Decimal(user["balance"]):
+        return "❌ Low balance", None
+    
+    multipliers = [0.1, 0.5, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0, 5.0, 10.0]
+    mult = Decimal(str(random.choice(multipliers)))
+    payout = bet * mult
+    
+    result = "WIN" if mult >= 1 else "LOSE"
+    
+    new_balance = Decimal(user["balance"]) - bet + payout
+    update_user(user_id,
+        balance=new_balance,
+        total_wagered=Decimal(user["total_wagered"]) + bet,
+        total_won=Decimal(user["total_won"]) + payout if result == "WIN" else Decimal(user["total_won"]),
+        total_lost=Decimal(user["total_lost"]) + bet if result == "LOSE" else Decimal(user["total_lost"]),
+        games_played=user["games_played"] + 1
+    )
+    
+    log_game(user_id, "plinko", bet, f"Multiplier:{mult}x", payout, mult)
+    
+    emoji = "🔴" if mult < 1 else "🟡" if mult < 2 else "🟢" if mult < 5 else "💎"
+    
+    if result == "WIN":
+        msg = f"""{emoji} **PLINKO - WIN!**
+
+Multiplier: {mult}x
+Win: ${payout}
+
+Balance: ${new_balance}
+"""
+    else:
+        msg = f"""{emoji} **PLINKO - LOSE**
+
+Multiplier: {mult}x
+Lost: ${bet}
+
+Balance: ${new_balance}
+"""
+    
+    return msg, result
+
+================================================================================
+AIRDROP SYSTEM
+================================================================================
+
+@bot.message_handler(commands=['airdrop'])
+def airdrop_menu(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "❌ Admin only")
+        return
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("💰 Send Airdrop", callback_data="send_airdrop"))
+    markup.add(types.InlineKeyboardButton("📊 Airdrop History", callback_data="airdrop_history"))
+    
+    bot.send_message(message.chat.id, "⚙️ **AIRDROP ADMIN**\n\nSelect action:", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "send_airdrop")
+def send_airdrop_handler(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    msg = bot.send_message(call.message.chat.id, "Enter airdrop amount per user ($):")
+    bot.register_next_step_handler(msg, process_airdrop, call.message.chat.id)
+
+def process_airdrop(message, admin_id):
+    try:
+        amount = Decimal(message.text.strip())
+        count = 0
+        
+        for user_id in users.keys():
+            user = get_user(user_id)
+            if not user["banned"]:
+                new_balance = Decimal(user["balance"]) + amount
+                update_user(user_id, balance=new_balance)
+                count += 1
+                
+                try:
+                    bot.send_message(int(user_id), f"🎁 **AIRDROP!**\n\nYou received ${amount}\n\nNew Balance: ${new_balance}")
+                except:
+                    pass
+        
+        airdrop_id = str(int(time.time() * 1000))
+        airdrop_log[airdrop_id] = {
+            "admin": admin_id,
+            "amount": str(amount),
+            "users": count,
+            "time": datetime.now().isoformat()
+        }
+        save_data(airdrop_log, AIRDROP_LOG_FILE)
+        log_admin_action(admin_id, "airdrop", f"${amount} to {count} users")
+        
+        bot.send_message(admin_id, f"✅ Airdrop sent to {count} users\nAmount per user: ${amount}")
+    except:
+        bot.send_message(admin_id, "❌ Invalid amount")
+
+================================================================================
+RAIN SYSTEM
+================================================================================
+
+@bot.message_handler(commands=['rain'])
+def rain_menu(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "❌ Admin only")
+        return
+    
+    msg = bot.send_message(message.chat.id, "Enter total rain amount ($) to distribute:")
+    bot.register_next_step_handler(msg, process_rain, message.chat.id)
+
+def process_rain(message, admin_id):
+    try:
+        total_amount = Decimal(message.text.strip())
+        
+        # Get active users (played in last 24h)
+        active_users = []
+        for user_id in users.keys():
+            user = get_user(user_id)
+            if not user["banned"] and user["games_played"] > 0:
+                active_users.append(user_id)
+        
+        if not active_users:
+            bot.send_message(admin_id, "❌ No active users")
+            return
+        
+        # Distribute equally
+        per_user = total_amount / Decimal(len(active_users))
+        
+        for user_id in active_users:
+            user = get_user(user_id)
+            new_balance = Decimal(user["balance"]) + per_user
+            update_user(user_id, balance=new_balance, last_rain=datetime.now().isoformat())
+            
+            try:
+                bot.send_message(int(user_id), f"🌧️ **RAIN!**\n\nYou received ${per_user:.2f}\n\nNew Balance: ${new_balance:.2f}")
+            except:
+                pass
+        
+        log_admin_action(admin_id, "rain", f"${total_amount} to {len(active_users)} users (${per_user:.2f} each)")
+        bot.send_message(admin_id, f"✅ Rain sent!\n\nTotal: ${total_amount}\nUsers: {len(active_users)}\nPer user: ${per_user:.2f}")
+    except:
+        bot.send_message(admin_id, "❌ Invalid amount")
+
+================================================================================
+ADMIN PANEL - FULL CONTROL
+================================================================================
+
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if not is_admin(message.chat.id):
+        bot.send_message(message.chat.id, "❌ Admin only")
+        return
+    
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("👥 Users", callback_data="admin_users"),
+        types.InlineKeyboardButton("💰 Balance", callback_data="admin_balance"),
+        types.InlineKeyboardButton("📊 Stats", callback_data="admin_stats"),
+        types.InlineKeyboardButton("🚫 Ban User", callback_data="admin_ban"),
+        types.InlineKeyboardButton("🎁 Give Bonus", callback_data="admin_bonus"),
+        types.InlineKeyboardButton("👑 VIP", callback_data="admin_vip"),
+        types.InlineKeyboardButton("🌧️ Rain", callback_data="admin_rain"),
+        types.InlineKeyboardButton("🎁 Airdrop", callback_data="admin_airdrop"),
+        types.InlineKeyboardButton("📈 Games", callback_data="admin_games"),
+        types.InlineKeyboardButton("📝 Logs", callback_data="admin_logs")
+    )
+    
+    bot.send_message(message.chat.id, "⚙️ **ADMIN PANEL**", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_users")
+def admin_users(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    total = len(users)
+    active = len([u for u in users.values() if u["games_played"] > 0])
+    banned = len([u for u in users.values() if u["banned"]])
+    vips = len([u for u in users.values() if u["vip"]])
+    total_balance = sum(Decimal(u["balance"]) for u in users.values())
+    
+    text = f"""👥 **USERS**
+
+Total: {total}
+Active: {active}
+VIP: {vips}
+Banned: {banned}
+Total Balance: ${total_balance}
+
+Top Players:
+"""
+    
+    top = sorted(users.items(), key=lambda x: Decimal(x[1]["balance"]), reverse=True)[:5]
+    for i, (uid, udata) in enumerate(top, 1):
+        text += f"\n{i}. {uid[:8]}: ${udata['balance']}"
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_balance")
+def admin_balance(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    msg = bot.send_message(call.message.chat.id, "Enter user_id to edit balance:")
+    bot.register_next_step_handler(msg, get_edit_balance, call.message.chat.id)
+
+def get_edit_balance(message, admin_id):
+    user_id = message.text.strip()
+    if user_id in users:
+        msg = bot.send_message(admin_id, f"Current: ${users[user_id]['balance']}\n\nEnter new balance:")
+        bot.register_next_step_handler(msg, set_new_balance, admin_id, user_id)
+    else:
+        bot.send_message(admin_id, "❌ User not found")
+
+def set_new_balance(message, admin_id, user_id):
+    try:
+        new_balance = Decimal(message.text.strip())
+        old_balance = Decimal(users[user_id]["balance"])
+        update_user(user_id, balance=new_balance)
+        log_admin_action(admin_id, "set_balance", f"{user_id}: ${old_balance} → ${new_balance}")
+        bot.send_message(admin_id, f"✅ Balance set to ${new_balance}")
+    except:
+        bot.send_message(admin_id, "❌ Invalid")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
+def admin_stats(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    total_wagered = sum(Decimal(u["total_wagered"]) for u in users.values())
+    total_won = sum(Decimal(u["total_won"]) for u in users.values())
+    total_lost = sum(Decimal(u["total_lost"]) for u in users.values())
+    games_played = sum(u["games_played"] for u in users.values())
+    
+    house_edge = ((total_lost - total_won) / total_wagered * 100) if total_wagered > 0 else 0
+    
+    text = f"""📊 **STATS**
+
+Total Wagered: ${total_wagered}
+Total Won (payout): ${total_won}
+Total Lost: ${total_lost}
+House Edge: {house_edge:.2f}%
+
+Games: {games_played}
+"""
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_ban")
+def admin_ban(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    msg = bot.send_message(call.message.chat.id, "Enter user_id to ban:")
+    bot.register_next_step_handler(msg, process_ban, call.message.chat.id)
+
+def process_ban(message, admin_id):
+    user_id = message.text.strip()
+    if user_id in users:
+        update_user(user_id, banned=True)
+        log_admin_action(admin_id, "ban_user", user_id)
+        bot.send_message(admin_id, f"✅ User {user_id} banned")
+    else:
+        bot.send_message(admin_id, "❌ Not found")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_bonus")
+def admin_bonus(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    msg = bot.send_message(call.message.chat.id, "Enter user_id:")
+    bot.register_next_step_handler(msg, get_bonus_user, call.message.chat.id)
+
+def get_bonus_user(message, admin_id):
+    user_id = message.text.strip()
+    msg = bot.send_message(admin_id, f"Enter bonus for {user_id}:")
+    bot.register_next_step_handler(msg, apply_bonus, admin_id, user_id)
+
+def apply_bonus(message, admin_id, user_id):
+    try:
+        bonus = Decimal(message.text.strip())
+        if user_id in users:
+            user = get_user(user_id)
+            new_balance = Decimal(user["balance"]) + bonus
+            update_user(user_id, balance=new_balance)
+            log_admin_action(admin_id, "give_bonus", f"{user_id}: ${bonus}")
+            bot.send_message(user_id, f"🎁 Bonus: ${bonus}")
+            bot.send_message(admin_id, f"✅ Bonus ${bonus} given")
+    except:
+        bot.send_message(admin_id, "❌ Invalid")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_vip")
+def admin_vip(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    msg = bot.send_message(call.message.chat.id, "Enter user_id for VIP:")
+    bot.register_next_step_handler(msg, set_vip, call.message.chat.id)
+
+def set_vip(message, admin_id):
+    user_id = message.text.strip()
+    if user_id in users:
+        update_user(user_id, vip=True)
+        log_admin_action(admin_id, "vip_promote", user_id)
+        bot.send_message(user_id, "👑 You are VIP!")
+        bot.send_message(admin_id, f"✅ {user_id} is VIP")
+    else:
+        bot.send_message(admin_id, "❌ Not found")
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_games")
+def admin_games(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    game_types = {}
+    for gid, gdata in games.items():
+        gtype = gdata["game"]
+        if gtype not in game_types:
+            game_types[gtype] = {"count": 0, "wagered": 0}
+        game_types[gtype]["count"] += 1
+        game_types[gtype]["wagered"] += Decimal(gdata["bet"])
+    
+    text = "📈 **GAME STATS**\n\n"
+    for game, stats in game_types.items():
+        text += f"{game}: {stats['count']} plays | ${stats['wagered']}\n"
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "admin_logs")
+def admin_logs(call):
+    if not is_admin(call.message.chat.id):
+        return
+    
+    recent = sorted(admin_log.items(), key=lambda x: x[0], reverse=True)[:10]
+    text = "📝 **ADMIN LOGS**\n\n"
+    for log_id, log_data in recent:
+        text += f"{log_data['action']}: {log_data['details']}\n"
+    
+    bot.edit_message_text(text, call.message.chat.id, call.message.message_id)
+
+================================================================================
+GAME HANDLERS
+================================================================================
+
+@bot.message_handler(commands=['play'])
+def play_menu(message):
+    user_id = message.chat.id
+    user = get_user(user_id)
+    
+    if user["banned"]:
+        bot.send_message(user_id, "❌ Account banned")
+        return
+    
+    text = f"""🎮 **PLAY GAMES**
+
+Balance: 💵 ${user["balance"]}
+Games: {user["games_played"]}
+
+Select game:
+"""
+    
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        types.InlineKeyboardButton("🎲 Dice (1.98x)", callback_data="game_dice"),
+        types.InlineKeyboardButton("🎯 Predict (1.98x)", callback_data="game_predict"),
+        types.InlineKeyboardButton("🚀 Crash", callback_data="game_crash"),
+        types.InlineKeyboardButton("🎯 Plinko", callback_data="game_plinko")
+    )
+    
+    bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("game_"))
+def select_game(call):
+    user_id = call.message.chat.id
+    game = call.data.split("_")[1]
+    
+    markup = types.InlineKeyboardMarkup()
+    for bet in [10, 25, 50, 100, 250]:
+        markup.add(types.InlineKeyboardButton(f"${bet}", callback_data=f"{game}_bet_{bet}"))
+    
+    text = f"**{game.upper()}**\n\nSelect bet:"
+    bot.edit_message_text(text, user_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: "_bet_" in call.data)
+def handle_bet(call):
+    user_id = call.message.chat.id
+    user = get_user(user_id)
+    
+    if user["banned"]:
+        bot.answer_callback_query(call.id, "❌ Banned", show_alert=True)
+        return
+    
+    parts = call.data.split("_")
+    game = parts[0]
+    bet = int(parts[2])
+    
+    if game == "dice":
+        msg, result = play_dice(user_id, bet)
+    elif game == "predict":
+        msg, result = play_predict(user_id, bet)
+    elif game == "crash":
+        msg, result = play_crash(user_id, bet)
+    elif game == "plinko":
+        msg, result = play_plinko(user_id, bet)
+    
+    user = get_user(user_id)
+    markup = types.InlineKeyboardMarkup()
+    markup.add(types.InlineKeyboardButton("🎮 Play Again", callback_data="play_again"))
+    
+    bot.edit_message_text(msg, user_id, call.message.message_id, parse_mode="Markdown")
+    bot.send_message(user_id, "Next?", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "play_again")
+def play_again(call):
+    play_menu(call.message)
+    bot.answer_callback_query(call.id)
+
+================================================================================
+USER COMMANDS
+================================================================================
+
+@bot.message_handler(commands=['start'])
+def start(message):
+    user_id = message.chat.id
+    user = get_user(user_id)
+    
+    text = f"""🎰 **CASINO BOT**
+
+Real money. Instant payouts.
+
+Balance: 💵 ${user["balance"]}
+
+Games:
+🎲 Dice - Roll vs Dealer (1.98x)
+🎯 Predict - UP/DOWN (1.98x)
+🚀 Crash - Watch multiplier
+🎯 Plinko - Drop & multiply
+
+/play - Start playing
+/balance - Check balance
+/stats - Your stats
+/help - Commands
+"""
+    
+    if is_admin(user_id):
+        text += "\n\n/admin - Admin Panel"
+    
+    markup = types.InlineKeyboardMarkup()
+    markup.add(
+        types.InlineKeyboardButton("🎮 Play", callback_data="play_btn"),
+        types.InlineKeyboardButton("💰 Balance", callback_data="bal_btn")
+    )
+    
+    bot.send_message(user_id, text, parse_mode="Markdown", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "play_btn")
+def play_btn(call):
+    play_menu(call.message)
+    bot.answer_callback_query(call.id)
+
+@bot.callback_query_handler(func=lambda call: call.data == "bal_btn")
+def bal_btn(call):
+    user_id = call.message.chat.id
+    user = get_user(user_id)
+    
+    text = f"""💰 **BALANCE**
+
+Balance: ${user["balance"]}
+
+Deposited: ${user["total_deposited"]}
+Withdrawn: ${user["total_withdrawn"]}
+Wagered: ${user["total_wagered"]}
+
+Won: ${user["total_won"]}
+Lost: ${user["total_lost"]}
+Games: {user["games_played"]}
+"""
+    
+    bot.edit_message_text(text, user_id, call.message.message_id, parse_mode="Markdown")
+
+@bot.message_handler(commands=['balance'])
+def balance_cmd(message):
+    user_id = message.chat.id
+    user = get_user(user_id)
+    
+    text = f"""💰 **BALANCE**
+
+Balance: ${user["balance"]}
+
+Deposited: ${user["total_deposited"]}
+Withdrawn: ${user["total_withdrawn"]}
+Wagered: ${user["total_wagered"]}
+
+Won: ${user["total_won"]}
+Lost: ${user["total_lost"]}
+Games: {user["games_played"]}
+"""
+    
+    bot.send_message(user_id, text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['stats'])
+def stats_cmd(message):
+    user_id = message.chat.id
+    user = get_user(user_id)
+    
+    roi = Decimal("0")
+    if Decimal(user["total_wagered"]) > 0:
+        roi = (Decimal(user["total_won"]) - Decimal(user["total_lost"])) / Decimal(user["total_wagered"]) * Decimal("100")
+    
+    text = f"""📊 **STATS**
+
+Games: {user["games_played"]}
+ROI: {roi:.1f}%
+
+Won: ${user["total_won"]}
+Lost: ${user["total_lost"]}
+Wagered: ${user["total_wagered"]}
+
+VIP: {'✅ Yes' if user["vip"] else '❌ No'}
+"""
+    
+    bot.send_message(user_id, text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['help'])
+def help_cmd(message):
+    text = """🎰 **CASINO COMMANDS**
+
+/play - Start playing
+/balance - Check balance
+/stats - View stats
+/help - This menu
+
+Games:
+🎲 Dice - 1.98x
+🎯 Predict - 1.98x
+🚀 Crash
+🎯 Plinko
+
+Features:
+🌧️ Rain - Random payouts
+🎁 Airdrop - Free money
+⚙️ Admin - Full control
+"""
+    
+    bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+@bot.message_handler(func=lambda msg: True)
+def unknown(message):
+    bot.send_message(message.chat.id, "❓ Unknown. Try /help or /play")
+
+================================================================================
+MAIN
+================================================================================
+
+if __name__ == "__main__":
+    print("=" * 70)
+    print("🎰 COMPLETE CASINO BOT")
+    print("=" * 70)
+    print("✅ Bot running...")
+    print("=" * 70)
+    
+    try:
+        bot.infinity_polling()
+    except KeyboardInterrupt:
+        print("\n❌ Stopped")
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+================================================================================
+END
+================================================================================
